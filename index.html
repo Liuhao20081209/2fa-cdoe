@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TOTP 2FA </title>
+<style>
+:root {
+  --bg: #ffffff;
+  --text-main: #1f2937;
+  --text-sub: #4b5563;
+  --card-bg: #f3f4f6;
+  --border-color: #ddd;
+  --primary:#2563eb;
+  --danger:#ef4444;
+  --success:#16a34a;
+}
+[data-theme="dark"] {
+  --bg: #111827;
+  --text-main: #f3f4f6;
+  --text-sub: #d1d5db;
+  --card-bg: #1f2937;
+  --border-color: #374151;
+  --primary:#3b82f6;
+  --danger:#f87171;
+  --success:#22c55e;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111827;
+    --text-main: #f3f4f6;
+    --text-sub: #d1d5db;
+    --card-bg: #1f2937;
+    --border-color: #374151;
+    --primary:#3b82f6;
+    --danger:#f87171;
+    --success:#22c55e;
+  }
+}
+*{box-sizing:border-box;font-family:system-ui, -apple-system, sans-serif}
+body{
+  max-width:480px;
+  margin:1.5rem auto;
+  padding:0 0.8rem;
+  background-color: var(--bg);
+  color: var(--text-main);
+  transition: background 0.3s, color 0.3s;
+}
+.header-wrap {
+  max-width:480px;
+  margin:0 auto 14px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap: 12px;
+}
+h2{margin:0;font-size:1.4rem;}
+h3{margin:0 0 8px 0;font-size:1.1rem;}
+.card{
+  background:var(--card-bg);
+  padding:20px;
+  border-radius:16px;
+  box-shadow:0 4px 16px rgba(0,0,0,0.12);
+  margin-bottom:14px;
+}
+input,select{
+  width:100%;
+  padding:12px 14px;
+  margin:6px 0;
+  border:1px solid var(--border-color);
+  border-radius:10px;
+  font-size:16px;
+  background:var(--card-bg);
+  color:var(--text-main);
+}
+button{
+  padding:12px 14px;
+  border:none;
+  border-radius:10px;
+  background:var(--primary);
+  color:#fff;
+  cursor:pointer;
+  margin:4px;
+  font-size:15px;
+  transition:0.2s;
+  min-height:44px;
+}
+button:hover{opacity:0.85;}
+.btn-del{background:var(--danger);}
+.btn-success{background:var(--success);}
+#code{
+  font-size:clamp(32px,8vw,40px);
+  font-weight:bold;
+  letter-spacing:6px;
+  margin:14px 0;
+  text-align:center;
+}
+#progress{
+  height:7px;
+  background:var(--border-color);
+  border-radius:4px;
+  overflow:hidden;
+  margin-bottom:16px;
+}
+#bar{
+  height:100%;
+  background:var(--primary);
+  width:100%;
+  transition: linear 1s;
+}
+.row{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.row select{
+  flex:1 1 110px;
+}
+.item{
+  border:1px solid var(--border-color);
+  border-radius:10px;
+  padding:12px;
+  margin:8px 0;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+}
+.item-code{
+  font-size:clamp(22px,6vw,26px);
+  font-weight:bold;
+  letter-spacing:4px;
+}
+.btn-group{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin:8px 0;
+}
+.hidden-input{
+  display:none;
+}
+.tip-text{
+  font-size:13px;
+  color:var(--text-sub);
+  margin:6px 4px;
+}
+</style>
+</head>
+<body>
+<div class="header-wrap">
+  <h2>TOTP 2FA</h2>
+  <theme-button value="light" id="btn" size="1.2"></theme-button>
+</div>
+<div class="card">
+  <div id="progress"><div id="bar"></div></div>
+  <input id="secret" placeholder="填入Base32密钥" value="">
+  <input id="name" placeholder="账户名称（例如 Github）">
+  <div class="row">
+    <select id="hashAlg">
+      <option value="SHA-1">SHA‑1 (默认)</option>
+      <option value="SHA-256">SHA‑256</option>
+    </select>
+    <select id="digits">
+      <option value="6">6位</option>
+      <option value="8">8位</option>
+    </select>
+    <select id="step">
+      <option value="30">30秒</option>
+      <option value="60">60秒</option>
+    </select>
+  </div>
+  <div class="btn-group">
+    <button onclick="addItem()">保存账户</button>
+  </div>
+  <div id="code">------</div>
+  <button onclick="copyCode()">复制验证码</button>
+</div>
+<div class="card">
+  <h3>已保存列表</h3>
+  <div class="btn-group">
+    <button onclick="exportBackup()">导出备份</button>
+    <button class="btn-success" onclick="document.getElementById('fileInput').click()">导入备份</button>
+    <input type="file" id="fileInput" accept=".json" class="hidden-input" onchange="importBackup(this)">
+  </div>
+  <div class="tip-text">忘记加密密码，备份文件将无法恢复</div>
+  <div id="listWrap"></div>
+</div>
+<script>
+(() => {
+  const func = (root, initTheme, changeTheme) => {
+    const $ = (s) => {
+      let dom = root.querySelectorAll(s);
+      return dom.length == 1 ? dom[0] : dom;
+    };
+    let mainButton = $(".main-button");
+    let daytimeBackground = $(".daytime-background");
+    let cloud = $(".cloud");
+    let cloudList = $(".cloud-son");
+    let cloudLight = $(".cloud-light");
+    let components = $(".components");
+    let moon = $(".moon");
+    let stars = $(".stars");
+    let star = $(".star");
+    let isMoved = false;
+    let isClicked = false;
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      toggleThemeBasedOnSystem();
+    });
+    const toggleThemeBasedOnSystem = () => {
+      if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+        if (!isMoved) components.onclick();
+      } else {
+        if (isMoved) components.onclick();
+      }
+    };
+    components.onclick = () => {
+      if (isMoved) {
+        mainButton.style.transform = "translateX(0)";
+        mainButton.style.backgroundColor = "rgba(255, 195, 35,1)";
+        mainButton.style.boxShadow =
+          "3em 3em 5em rgba(0, 0, 0, 0.5), inset  -3em -5em 3em -3em rgba(0, 0, 0, 0.5), inset  4em 5em 2em -2em rgba(255, 230, 80,1)";
+        daytimeBackground[0].style.transform = "translateX(0)";
+        daytimeBackground[1].style.transform = "translateX(0)";
+        daytimeBackground[2].style.transform = "translateX(0)";
+        cloud.style.transform = "translateY(10em)";
+        cloudLight.style.transform = "translateY(10em)";
+        components.style.backgroundColor = "rgba(70, 133, 192,1)";
+        moon[0].style.opacity = "0";
+        moon[1].style.opacity = "0";
+        moon[2].style.opacity = "0";
+        stars.style.transform = "translateY(-125em)";
+        stars.style.opacity = "0";
+        changeTheme("light");
+      } else {
+        mainButton.style.transform = "translateX(110em)";
+        mainButton.style.backgroundColor = "rgba(195, 200,210,1)";
+        mainButton.style.boxShadow =
+          "3em 3em 5em rgba(0, 0, 0, 0.5), inset  -3em -5em 3em -3em rgba(0, 0, 0, 0.5), inset  4em 5em 2em -2em rgba(255, 255, 210,1)";
+        daytimeBackground[0].style.transform = "translateX(110em)";
+        daytimeBackground[1].style.transform = "translateX(80em)";
+        daytimeBackground[2].style.transform = "translateX(50em)";
+        cloud.style.transform = "translateY(80em)";
+        cloudLight.style.transform = "translateY(80em)";
+        components.style.backgroundColor = "rgba(25,30,50,1)";
+        moon[0].style.opacity = "1";
+        moon[1].style.opacity = "1";
+        moon[2].style.opacity = "1";
+        stars.style.transform = "translateY(-62.5em)";
+        stars.style.opacity = "1";
+        changeTheme("dark");
+      }
+      isClicked = true;
+      setTimeout(()=>{ isClicked = false; }, 500);
+      isMoved = !isMoved;
+    };
+    mainButton.addEventListener("mousemove", function () {
+      if (isClicked) return;
+      if (isMoved) {
+        mainButton.style.transform = "translateX(100em)";
+        daytimeBackground[0].style.transform = "translateX(100em)";
+        daytimeBackground[1].style.transform = "translateX(73em)";
+        daytimeBackground[2].style.transform = "translateX(46em)";
+        star[0].style.top = "10em";star[0].style.left = "36em";
+        star[1].style.top = "40em";star[1].style.left = "87em";
+        star[2].style.top = "26em";star[2].style.left = "16em";
+        star[3].style.top = "38em";star[3].style.left = "63em";
+        star[4].style.top = "20.5em";star[4].style.left = "72em";
+        star[5].style.top = "51.5em";star[5].style.left = "35em";
+      } else {
+        mainButton.style.transform = "translateX(10em)";
+        daytimeBackground[0].style.transform = "translateX(10em)";
+        daytimeBackground[1].style.transform = "translateX(7em)";
+        daytimeBackground[2].style.transform = "translateX(4em)";
+        cloudList[0].style.right = "-24em";cloudList[0].style.bottom = "10em";
+        cloudList[1].style.right = "-12em";cloudList[1].style.bottom = "-27em";
+        cloudList[2].style.right = "17em";cloudList[2].style.bottom = "-43em";
+        cloudList[3].style.right = "46em";cloudList[3].style.bottom = "-39em";
+        cloudList[4].style.right = "70em";cloudList[4].style.bottom = "-65em";
+        cloudList[5].style.right = "109em";cloudList[5].style.bottom = "-54em";
+        cloudList[6].style.right = "-23em";cloudList[6].style.bottom = "10em";
+        cloudList[7].style.right = "-11em";cloudList[7].style.bottom = "-26em";
+        cloudList[8].style.right = "18em";cloudList[8].style.bottom = "-42em";
+        cloudList[9].style.right = "47em";cloudList[9].style.bottom = "-38em";
+        cloudList[10].style.right = "74em";cloudList[10].style.bottom = "-64em";
+        cloudList[11].style.right = "110em";cloudList[11].style.bottom = "-55em";
+      }
+    });
+    mainButton.addEventListener("mouseout", function () {
+      if (isClicked) return;
+      if (isMoved) {
+        mainButton.style.transform = "translateX(110em)";
+        daytimeBackground[0].style.transform = "translateX(110em)";
+        daytimeBackground[1].style.transform = "translateX(80em)";
+        daytimeBackground[2].style.transform = "translateX(50em)";
+        star[0].style.top = "11em";star[0].style.left = "39em";
+        star[1].style.top = "39em";star[1].style.left = "91em";
+        star[2].style.top = "26em";star[2].style.left = "19em";
+        star[3].style.top = "37em";star[3].style.left = "66em";
+        star[4].style.top = "21em";star[4].style.left = "75em";
+        star[5].style.top = "51em";star[5].style.left = "38em";
+      } else {
+        mainButton.style.transform = "translateX(0em)";
+        daytimeBackground[0].style.transform = "translateX(0em)";
+        daytimeBackground[1].style.transform = "translateX(0em)";
+        daytimeBackground[2].style.transform = "translateX(0em)";
+        cloudList[0].style.right = "-20em";cloudList[0].style.bottom = "10em";
+        cloudList[1].style.right = "-10em";cloudList[1].style.bottom = "-25em";
+        cloudList[2].style.right = "20em";cloudList[2].style.bottom = "-40em";
+        cloudList[3].style.right = "50em";cloudList[3].style.bottom = "-35em";
+        cloudList[4].style.right = "75em";cloudList[4].style.bottom = "-60em";
+        cloudList[5].style.right = "110em";cloudList[5].style.bottom = "-50em";
+        cloudList[6].style.right = "-20em";cloudList[6].style.bottom = "10em";
+        cloudList[7].style.right = "-10em";cloudList[7].style.bottom = "-25em";
+        cloudList[8].style.right = "20em";cloudList[8].style.bottom = "-40em";
+        cloudList[9].style.right = "50em";cloudList[9].style.bottom = "-35em";
+        cloudList[10].style.right = "75em";cloudList[10].style.bottom = "-60em";
+        cloudList[11].style.right = "110em";cloudList[11].style.bottom = "-50em";
+      }
+    });
+    const getRandomDirection = () => ["2em","-2em"][Math.floor(Math.random()*2)];
+    const moveElementRandomly = el=>{
+      const dx=getRandomDirection(), dy=getRandomDirection();
+      el.style.transform = `translate(${dx}, ${dy})`;
+    };
+    const cloudSons = root.querySelectorAll(".cloud-son");
+    setInterval(()=>cloudSons.forEach(moveElementRandomly),1000);
+    if (initTheme === "dark") components.onclick();
+  };
+  class ThemeButton extends HTMLElement {
+    constructor(){super();}
+    connectedCallback(){
+      const initTheme = this.getAttribute("value")||"light";
+      const size = +this.getAttribute("size")||3;
+      const shadow = this.attachShadow({ mode:"closed" });
+      const container = document.createElement("div");
+      container.className="container";
+      container.style.fontSize = `${(size/3).toFixed(2)}px`;
+      container.innerHTML=
+`<div class="components">
+<div class="main-button">
+  <div class="moon"></div><div class="moon"></div><div class="moon"></div>
+</div>
+<div class="daytime-background"></div>
+<div class="daytime-background"></div>
+<div class="daytime-background"></div>
+<div class="cloud">
+<div class="cloud-son"></div><div class="cloud-son"></div><div class="cloud-son"></div>
+<div class="cloud-son"></div><div class="cloud-son"></div><div class="cloud-son"></div>
+</div>
+<div class="cloud-light">
+<div class="cloud-son"></div><div class="cloud-son"></div><div class="cloud-son"></div>
+<div class="cloud-son"></div><div class="cloud-son"></div><div class="cloud-son"></div>
+</div>
+<div class="stars">
+<div class="star big"><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div></div>
+<div class="star big"><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div></div>
+<div class="star medium"><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div></div>
+<div class="star medium"><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div></div>
+<div class="star small"><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div></div>
+<div class="star small"><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div><div class="star-son"></div></div>
+</div>
+</div>`;
+      const style = document.createElement("style");
+      style.textContent=`
+*{margin:0;padding:0;transition:0.7s;-webkit-tap-highlight-color:rgba(0,0,0,0);}
+.container{position:relative;display:inline-block;vertical-align:bottom;transform:translate3d(0,0,0);}
+.components{position:relative;width:180em;height:70em;background-color:rgba(70,133,192,1);border-radius:100em;box-shadow:inset 0 0 5em 3em rgba(0,0,0,0.5);overflow:hidden;transition:0.7s;transition-timing-function:cubic-bezier(0,0.5,1,1);cursor:pointer;}
+.main-button{margin:7.5em 0 0 7.5em;width:55em;height:55em;background-color:rgba(255,195,35,1);border-radius:50%;box-shadow:3em 3em 5em rgba(0,0,0,0.5),inset -3em -5em 3em -3em rgba(0,0,0,0.5),inset 4em 5em 2em -2em rgba(255,230,80,1);transition:1.0s;transition-timing-function:cubic-bezier(0.56,1.35,0.52,1);}
+.moon{position:absolute;background-color:rgba(150,160,180,1);box-shadow:inset 0em 0em 1em 1em rgba(0,0,0,0.3);border-radius:50%;transition:0.5s;opacity:0;}
+.moon:nth-child(1){top:7.5em;left:25em;width:12.5em;height:12.5em;}
+.moon:nth-child(2){top:20em;left:7.5em;width:20em;height:20em;}
+.moon:nth-child(3){top:32.5em;left:32.5em;width:12.5em;height:12.5em;}
+.daytime-background{position:absolute;border-radius:50%;transition:1.0s;transition-timing-function:cubic-bezier(0.56,1.35,0.52,1);}
+.daytime-background:nth-child(2){top:-20em;left:-20em;width:110em;height:110em;background-color:rgba(255,255,255,0.2);z-index:-2;}
+.daytime-background:nth-child(3){top:-32.5em;left:-17.5em;width:135em;height:135em;background-color:rgba(255,255,255,0.1);z-index:-3;}
+.daytime-background:nth-child(4){top:-45em;left:-15em;width:160em;height:160em;background-color:rgba(255,255,255,0.05);z-index:-4;}
+.cloud,.cloud-light{transform:translateY(10em);transition:1.0s;transition-timing-function:cubic-bezier(0.56,1.35,0.52,1);}
+.cloud-son{position:absolute;background-color:#fff;border-radius:50%;z-index:-1;transition:transform 6s,right 1s,bottom 1s;}
+.cloud-son:nth-child(6n+1){right:-20em;bottom:10em;width:50em;height:50em;}
+.cloud-son:nth-child(6n+2){right:-10em;bottom:-25em;width:60em;height:60em;}
+.cloud-son:nth-child(6n+3){right:20em;bottom:-40em;width:60em;height:60em;}
+.cloud-son:nth-child(6n+4){right:50em;bottom:-35em;width:60em;height:60em;}
+.cloud-son:nth-child(6n+5){right:75em;bottom:-60em;width:75em;height:75em;}
+.cloud-son:nth-child(6n+6){right:110em;bottom:-50em;width:60em;height:60em;}
+.cloud{z-index:-2;}
+.cloud-light{position:absolute;right:0em;bottom:25em;opacity:0.5;z-index:-3;}
+.stars{transform:translateY(-125em);z-index:-2;transition:1.0s;transition-timing-function:cubic-bezier(0.56,1.35,0.52,1);}
+.big{--size:7.5em;}.medium{--size:5em;}.small{--size:3em;}
+.star{position:absolute;width:calc(2*var(--size));height:calc(2*var(--size));}
+.star:nth-child(1){top:11em;left:39em;animation-name:star;animation-duration:3.5s;}
+.star:nth-child(2){top:39em;left:91em;animation-name:star;animation-duration:4.1s;}
+.star:nth-child(3){top:26em;left:19em;animation-name:star;animation-duration:4.9s;}
+.star:nth-child(4){top:37em;left:66em;animation-name:star;animation-duration:5.3s;}
+.star:nth-child(5){top:21em;left:75em;animation-name:star;animation-duration:3s;}
+.star:nth-child(6){top:51em;left:38em;animation-name:star;animation-duration:2.2s;}
+@keyframes star{0%,20%{transform:scale(0);}20%,100%{transform:scale(1);}}
+.star-son{float:left;}
+.star-son:nth-child(1){--pos:left 0;}.star-son:nth-child(2){--pos:right 0;}
+.star-son:nth-child(3){--pos:0 bottom;}.star-son:nth-child(4){--pos:right bottom;}
+.star-son{width:var(--size);height:var(--size);background-image:radial-gradient(circle var(--size) at var(--pos),transparent var(--size),#fff);}
+.star{transform:scale(1);transition-timing-function:cubic-bezier(0.56,1.35,0.52,1);transition:1s;animation-iteration-count:infinite;animation-direction:alternate;animation-timing-function:linear;}
+.twinkle{transform:scale(0);}`;
+      const changeTheme=(detail)=>this.dispatchEvent(new CustomEvent("change",{detail}));
+      func(container,initTheme,changeTheme);
+      shadow.appendChild(style);
+      shadow.appendChild(container);
+    }
+  }
+  customElements.define("theme-button",ThemeButton);
+})();
+
+const btn = document.getElementById('btn');
+const html = document.documentElement;
+const savedTheme = localStorage.getItem('siteTheme');
+if(savedTheme === 'dark'){
+  html.setAttribute('data-theme','dark');
+  btn.setAttribute('value','dark');
+}else if(savedTheme === 'light'){
+  html.removeAttribute('data-theme');
+  btn.setAttribute('value','light');
+}
+btn.addEventListener("change", e=>{
+  if(e.detail === 'dark'){
+    html.setAttribute('data-theme','dark');
+    localStorage.setItem('siteTheme','dark');
+  }else{
+    html.removeAttribute('data-theme');
+    localStorage.setItem('siteTheme','light');
+  }
+});
+async function passToKey(password, salt) {
+  const enc = new TextEncoder();
+  const raw = await crypto.subtle.importKey("raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
+    raw,
+    { name: "AES‑GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+async function encryptData(plainObj, password) {
+  const enc = new TextEncoder();
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await passToKey(password, salt);
+  const plainText = JSON.stringify(plainObj);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES‑GCM", iv: iv }, key, enc.encode(plainText));
+  return {
+    salt: Array.from(salt),
+    iv: Array.from(iv),
+    data: Array.from(new Uint8Array(encrypted))
+  };
+}
+async function decryptData(encryptObj, password) {
+  const salt = new Uint8Array(encryptObj.salt);
+  const iv = new Uint8Array(encryptObj.iv);
+  const data = new Uint8Array(encryptObj.data);
+  const key = await passToKey(password, salt);
+  try {
+    const decBuf = await crypto.subtle.decrypt({ name: "AES‑GCM", iv: iv }, key, data);
+    const decText = new TextDecoder().decode(decBuf);
+    return JSON.parse(decText);
+  } catch (e) {
+    return null;
+  }
+}
+//主程序
+const B32CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+let currentCode = "";
+function base32Decode(s){
+  s = s.toUpperCase().replace(/[^A-Z2-7]/g,"");
+  let bits = "", out = [];
+  for(let c of s) bits += B32CHARS.indexOf(c).toString(2).padStart(5,"0");
+  for(let i=0;i+7<bits.length;i+=8) out.push(parseInt(bits.substr(i,8),2));
+  return Uint8Array.from(out);
+}
+async function getHmac(keyBuf, hashAlg, dataBuf){
+  const k = await crypto.subtle.importKey("raw", keyBuf, {name:"HMAC",hash:hashAlg}, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC",k,dataBuf);
+  return new Uint8Array(sig);
+}
+async function calcTOTP(base32secret, hashAlg, digits, stepSec){
+  const key = base32Decode(base32secret);
+  const now = Math.floor(Date.now()/1000);
+  const counter = Math.floor(now / stepSec);
+  const rem = now % stepSec;
+  const cBuf = new ArrayBuffer(8);
+  new DataView(cBuf).setBigUint64(0, BigInt(counter), false);
+  const hmac = await getHmac(key, hashAlg, new Uint8Array(cBuf));
+  const offset = hmac[hmac.length-1] & 0x0f;
+  const bin = ((hmac[offset]&0x7f)<<24) | (hmac[offset+1]<<16) | (hmac[offset+2]<<8) | hmac[offset+3];
+  const mod = Math.pow(10, digits);
+  const code = String(bin % mod).padStart(digits,"0");
+  return {code, remain: stepSec - rem};
+}
+async function update(){
+  const sec = document.getElementById("secret").value.trim();
+  const hashAlg = document.getElementById("hashAlg").value;
+  const digits = Number(document.getElementById("digits").value);
+  const stepSec = Number(document.getElementById("step").value);
+  const codeDom = document.getElementById("code");
+  const bar = document.getElementById("bar");
+  if(!sec){
+    codeDom.textContent="------";
+    currentCode="";
+    return;
+  }
+  try{
+    const res = await calcTOTP(sec, hashAlg, digits, stepSec);
+    codeDom.textContent = res.code;
+    currentCode = res.code;
+    bar.style.width = (res.remain / stepSec *100)+"%";
+  }catch{
+    codeDom.textContent = "密钥错误";
+    currentCode="";
+  }
+  renderList();
+}
+function copyCode(){
+  if(currentCode) navigator.clipboard.writeText(currentCode);
+}
+function getList(){
+  const raw = localStorage.getItem("totp_list");
+  return raw ? JSON.parse(raw) : [];
+}
+function saveList(arr){
+  localStorage.setItem("totp_list", JSON.stringify(arr));
+}
+function addItem(){
+  const name = document.getElementById("name").value.trim();
+  const secret = document.getElementById("secret").value.trim();
+  const hashAlg = document.getElementById("hashAlg").value;
+  const digits = +document.getElementById("digits").value;
+  const stepSec = +document.getElementById("step").value;
+  if(!secret)return;
+  const arr = getList();
+  arr.push({name,secret,hashAlg,digits,stepSec});
+  saveList(arr);
+  renderList();
+}
+//加密导出
+async function exportBackup() {
+  const data = getList();
+  if(data.length === 0){
+    alert("暂无账号，无法导出");
+    return;
+  }
+  const pwd = prompt("设置备份加密密码\n忘记密码备份将永久无法恢复！");
+  if(pwd === null || pwd.trim() === "") return;
+  try {
+    const encryptResult = await encryptData(data, pwd.trim());
+    const blob = new Blob([JSON.stringify(encryptResult,null,2)], {type:"application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "totp‑encrypted‑backup.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    alert("加密备份已下载！务必记住加密密码！");
+  }catch(err){
+    alert("导出加密失败："+err.message);
+    console.error(err);
+  }
+}
+//导入备份
+async function importBackup(inputEl){
+  const file = inputEl.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = async function(e){
+    try{
+      const fileJson = JSON.parse(e.target.result);
+      
+      if(!(fileJson.salt && fileJson.iv && fileJson.data)){
+        alert("不是有效的加密备份文件");
+        inputEl.value = "";
+        return;
+      }
+      const pwd = prompt("输入备份的密码");
+      if(pwd === null || pwd.trim() === ""){
+        inputEl.value = "";
+        return;
+      }
+      const realData = await decryptData(fileJson, pwd.trim());
+      if(!realData){
+        alert("密码错误或文件损坏");
+        inputEl.value = "";
+        return;
+      }
+      if(!Array.isArray(realData)) throw new Error("格式错误");
+      for(let item of realData){
+        if(!item.secret) throw new Error("字段缺失");
+      }
+      const old = getList();
+      const merge = [...old, ...realData];
+      saveList(merge);
+      alert(`成功导入 ${realData.length} 条账号`);
+      renderList();
+    }catch(err){
+      alert("导入失败，文件损坏或者不是备份文件");
+      console.error(err);
+    }
+    inputEl.value = "";
+  };
+  reader.readAsText(file);
+}
+async function renderList(){
+  const wrap = document.getElementById("listWrap");
+  const arr = getList();
+  wrap.innerHTML = "";
+  for(let idx=0;idx<arr.length;idx++){
+    const item = arr[idx];
+    let codeText = "----";
+    try{
+      const r = await calcTOTP(item.secret, item.hashAlg, item.digits, item.stepSec);
+      codeText = r.code;
+    }catch(e){}
+    const div = document.createElement("div");
+    div.className="item";
+    div.innerHTML=`
+      <div style="flex:1">
+        <div>${item.name||"未命名"}</div>
+        <div class="item-code">${codeText}</div>
+      </div>
+      <button class="btn-del" data-i="${idx}">删除</button>
+    `;
+    wrap.appendChild(div);
+  }
+  document.querySelectorAll(".btn-del").forEach(b=>{
+    b.onclick=(e)=>{
+      const i = Number(e.target.dataset.i);
+      const a = getList();
+      a.splice(i,1);
+      saveList(a);
+      renderList();
+    }
+  })
+}
+document.getElementById("hashAlg").addEventListener("change",update);
+document.getElementById("digits").addEventListener("change",update);
+document.getElementById("step").addEventListener("change",update);
+update();
+setInterval(update,1000);
+</script>
+</body>
+</html>
